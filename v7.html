@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Copilot Redesign Prototype — Dockable, Sliding & File Tree (Fixed)</title>
+  <style>
+    :root{
+      --bg:#0b0f14;           /* editor bg */
+      --panel:#0f1520;        /* panels */
+      --text:#e6edf3;         /* primary text */
+      --muted:#9fb0c3;        /* secondary text */
+      --accent:#3ea6ff;       /* brand-ish */
+      --border:#1f2a3a;
+      --ok:#22c55e;
+
+      /* layout vars */
+      --console-h: 35vh;      /* bottom height (resizable) */
+      --console-w: 32vw;      /* right width (resizable) */
+      --topbar-h: 48px;
+      --popover-min-w: 260px;
+      --popover-min-h: 160px;
+      --sidebar-w: 220px;     /* file tree width (resizable) */
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; background:var(--bg); color:var(--text);
+      font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      overflow:hidden;
+    }
+    .app{ display:grid; grid-template-rows:var(--topbar-h) 1fr; height:100%; }
+    .topbar{
+      display:flex; align-items:center; gap:12px; padding:0 16px;
+      border-bottom:1px solid var(--border); background:linear-gradient(180deg, #101828, #0e1523);
+    }
+    .topbar .title{font-weight:600; letter-spacing:.2px}
+    .kbd{border:1px solid var(--border); background:#0d1320; padding:2px 6px; border-radius:6px; color:var(--muted)}
+    .help{margin-left:auto; color:var(--muted)}
+    .select{ margin-left:8px; display:inline-flex; align-items:center; gap:8px; color:var(--muted); }
+    .select select{ background:#0d1320; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:4px 8px; }
+
+    /* Workspace: sidebar + resizer + editor */
+    .workspace{ position:relative; height:100%; display:grid; grid-template-columns: var(--sidebar-w) 6px 1fr; overflow:hidden; }
+
+    /* Sidebar (mock file manager) */
+    .sidebar{
+      border-right:1px solid var(--border); background:#0a0f19; overflow:auto; padding:10px 8px;
+    }
+    .side-head{ display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:13px; padding:4px 6px 8px; }
+    .tree{ list-style:none; padding:0; margin:0; font-size:14px; }
+    .tree li{ padding:6px 6px; border-radius:8px; display:flex; align-items:center; gap:8px; cursor:pointer; }
+    .tree li:hover{ background:#0e1624; }
+    .tree .folder{ color:#e9b949; }
+    .tree .file{ color:#9fb0c3; }
+    .tree .active{ background:#0f1b2c; border:1px solid var(--border); }
+    .tree .indent{ width:14px; flex:0 0 14px; }
+
+    /* Sidebar resizer */
+    .sidebar-resizer{
+      cursor:ew-resize; background:linear-gradient(to right, transparent, rgba(255,255,255,.06), transparent);
+      border-right:1px solid var(--border);
+    }
+
+    /* Editor core */
+    .code{
+      position:relative; overflow:auto; padding:14px 18px; font-size:14.5px; line-height:1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      white-space:pre; /* simulate long lines */
+    }
+    .code[contenteditable="true"]:focus{outline:none}
+
+    /* Console base (with SLIDE motion) */
+    .console{
+      position:fixed; background:var(--panel); border-top:1px solid var(--border);
+      display:grid; grid-template-rows:32px 1fr 52px; box-shadow:0 -20px 60px rgba(0,0,0,.4);
+      overflow:hidden; opacity:0; pointer-events:none;
+      transition: transform .22s ease-in-out, opacity .15s ease-in-out;
+    }
+    .console.open{ opacity:1; pointer-events:auto; }
+
+    /* Dock: bottom (slides up) */
+    .console.dock-bottom{ left:0; right:0; bottom:0; height:var(--console-h); transform: translateY(100%); }
+    .console.open.dock-bottom{ transform: translateY(0); }
+    .console.dock-bottom .resize-handle{ position:absolute; top:0; left:0; right:0; height:6px; cursor:ns-resize; background:linear-gradient(to bottom, transparent, rgba(0,0,0,.05)); }
+
+    /* Dock: right (slides in) */
+    .console.dock-right{
+      top:var(--topbar-h); right:0; bottom:0; width:var(--console-w);
+      border-top:none; border-left:1px solid var(--border);
+      box-shadow:-20px 0 60px rgba(0,0,0,.4);
+      grid-template-rows:48px 1fr 52px; transform: translateX(100%);
+    }
+    .console.open.dock-right{ transform: translateX(0); }
+    .console.dock-right .resize-handle{ position:absolute; top:0; bottom:0; left:0; width:6px; cursor:ew-resize; background:linear-gradient(to right, transparent, rgba(0,0,0,.05)); }
+
+    .console .bar{display:flex; align-items:center; gap:10px; padding:0 12px; color:var(--muted); font-size:14px}
+    .console .dot{width:8px; height:8px; border-radius:50%; background:var(--ok)}
+    .console .msgs{overflow:auto; padding:10px 12px; display:flex; flex-direction:column; gap:10px}
+    .msg{max-width:80ch; padding:10px 12px; border:1px solid var(--border); border-radius:10px; font-size:14.5px}
+    .msg.you{align-self:flex-end; background:#0c1a2b}
+    .msg.bot{align-self:flex-start; background:#0d1524}
+    .console .input{ display:grid; grid-template-columns:1fr auto; gap:8px; padding:8px 12px; border-top:1px solid var(--border); }
+    textarea{width:100%; resize:none; height:36px; border-radius:8px; border:1px solid var(--border); background:#0b1220; color:var(--text); padding:8px; font-size:14.5px}
+    button{border:1px solid var(--border); background:#0b1324; color:var(--text); padding:8px 12px; border-radius:8px; cursor:pointer; font-size:14px}
+    button:hover{border-color:#29425f}
+
+    /* RMB popover (draggable + resizable) */
+    .popover{ position:fixed; top:0; left:0; display:none; width:360px; max-width:85vw; background:var(--panel); border:1px solid var(--border); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.45); overflow:hidden; min-width:var(--popover-min-w); min-height:var(--popover-min-h); }
+    .popover.visible{display:block}
+    .popover .head{ display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-bottom:1px solid var(--border); color:var(--muted); cursor:move; user-select:none; }
+    .popover .body{padding:10px; max-height:40vh; overflow:auto; display:flex; flex-direction:column; gap:8px}
+    .popover .foot{padding:8px; border-top:1px solid var(--border); display:grid; grid-template-columns:1fr auto; gap:8px}
+    .popover .resizer{ position:absolute; right:0; bottom:0; width:14px; height:14px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, rgba(255,255,255,.12) 50%); }
+
+    /* Badges */
+    .badge{display:inline-flex; gap:6px; align-items:center; font-size:12px; color:var(--muted)}
+    .pill{border:1px solid var(--border); padding:2px 8px; border-radius:999px}
+    a{color:var(--accent); text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="app" aria-describedby="helptext">
+    <div class="topbar">
+      <span class="title">Editor Mock</span>
+      <span class="badge"><span class="pill">Ctrl+I</span> Toggle console</span>
+      <span class="badge"><span class="pill">Right-click</span> Popover near cursor</span>
+
+      <span class="select">
+        Dock:
+        <select id="dockSelect" aria-label="Choose console dock">
+          <option value="bottom">Bottom</option>
+          <option value="right">Right</option>
+        </select>
+      </span>
+
+      <span class="help" id="helptext">Press <span class="kbd">Ctrl</span>+<span class="kbd">I</span> or right-click in the editor.</span>
+    </div>
+
+    <!-- Workspace: Sidebar + Resizer + Line numbers + Code -->
+    <div class="workspace" id="workspace">
+      <!-- Mock file manager -->
+      <aside class="sidebar" id="sidebar" role="navigation" aria-label="File manager">
+        <div class="side-head">
+          <strong style="font-size:13.5px;">EXPLORER</strong>
+          <button id="newFileBtn" title="New file" aria-label="New file">＋</button>
+        </div>
+        <ul class="tree" id="fileTree">
+          <li data-type="folder" class="folder" aria-expanded="true">📁 src</li>
+          <li class="indent"></li>
+          <li data-type="file" data-path="main.py" class="file active">🧾 main.py</li>
+          <li data-type="file" data-path="src/index.ts" class="file">🧾 index.ts</li>
+          <li data-type="file" data-path="src/app.tsx" class="file">🧾 app.tsx</li>
+          <li data-type="file" data-path="src/utils/math.ts" class="file">🧾 utils/math.ts</li>
+          <li data-type="folder" class="folder">📁 public</li>
+          <li class="indent"></li>
+          <li data-type="file" data-path="public/index.html" class="file">🧾 index.html</li>
+          <li data-type="file" data-path="README.md" class="file">🧾 README.md</li>
+        </ul>
+      </aside>
+
+      <!-- Left sidebar resizer -->
+      <div class="sidebar-resizer" id="sideResizer" aria-hidden="true" title="Drag to resize sidebar"></div>
+
+      <pre class="code" id="code" contenteditable="true" spellcheck="false">import math
+import json
+
+# Simulated code with long lines to show horizontal width benefits
+def compute_very_long_expression(alpha, beta, gamma):
+    result = alpha*alpha + beta*beta + gamma*gamma + math.sin(alpha*beta*gamma) + math.cos(alpha+beta+gamma) + len(json.dumps({"alpha": alpha, "beta": beta, "gamma": gamma}))
+    return result
+
+# Try typing, then press Ctrl+I to open the console (bottom/right).
+# Right-click to open an in-place popover near your cursor.
+
+for i in range(200):
+    # filler lines for scrolling & line numbers
+    print(f"line {i}: {compute_very_long_expression(i, i+1, i+2)}")</pre>
+    </div>
+  </div>
+
+  <!-- Dockable & SLIDING console -->
+  <section class="console dock-bottom" id="console" aria-live="polite" aria-label="Copilot console">
+    <div class="resize-handle" aria-hidden="true"></div>
+    <div class="bar">
+      <span class="dot"></span> Copilot Console • <span class="kbd" title="Esc">Esc</span> to close • <span class="kbd">Ctrl+I</span> to toggle
+      <button id="consoleRefresh" title="Clear chat" aria-label="Clear chat" style="margin-left: auto; padding: 4px 8px; font-size: 12px;">🗑️</button>
+    </div>
+    <div class="msgs" id="consoleMsgs" aria-label="Messages"></div>
+    <div class="input">
+      <textarea id="consoleInput" placeholder="Ask Copilot…"></textarea>
+      <button id="consoleSend" aria-label="Send to Copilot">Send</button>
+    </div>
+  </section>
+
+  <!-- RMB popover near cursor (draggable + resizable) -->
+  <div class="popover" id="popover" role="dialog" aria-modal="false" aria-label="Inline Copilot">
+    <div class="head" id="popoverDragHandle">
+      <span style="font-weight:600">Inline Copilot</span>
+      <div style="display: flex; gap: 8px;">
+        <button id="popoverRefresh" title="Clear chat" aria-label="Clear chat" style="padding: 4px 8px; font-size: 12px;">🗑️</button>
+        <button id="popoverClose" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="body" id="popoverBody"></div>
+    <div class="foot">
+      <textarea id="popoverInput" placeholder="Quick ask…"></textarea>
+      <button id="popoverSend" aria-label="Send">Send</button>
+    </div>
+    <div class="resizer" id="popoverResizer" aria-hidden="true"></div>
+  </div>
+
+  <script>
+    // ===== Code editor setup =====
+    const codeEl = document.getElementById('code');
+
+    // ===== Console basics =====
+    const consoleEl = document.getElementById('console');
+    const consoleInput = document.getElementById('consoleInput');
+    const consoleMsgs = document.getElementById('consoleMsgs');
+    const consoleSend = document.getElementById('consoleSend');
+    const dockSelect = document.getElementById('dockSelect');
+
+    function setDock(mode){
+      consoleEl.classList.toggle('dock-bottom', mode==='bottom');
+      consoleEl.classList.toggle('dock-right',  mode==='right');
+      localStorage.setItem('dockMode', mode);
+    }
+    // init dock from storage
+    setDock(localStorage.getItem('dockMode') || 'bottom');
+    dockSelect.value = localStorage.getItem('dockMode') || 'bottom';
+    dockSelect.addEventListener('change', e => setDock(e.target.value));
+
+    function toggleConsole(open){
+      const willOpen = open ?? !consoleEl.classList.contains('open');
+      consoleEl.classList.toggle('open', willOpen);
+      if (willOpen) setTimeout(()=>consoleInput.focus(), 80);
+    }
+
+    function addMsg(container, text, who='you'){
+      const div = document.createElement('div');
+      div.className = `msg ${who}`;
+      div.textContent = text;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function fakeAnswer(prompt){
+      if (/refactor|clean/i.test(prompt)) return 'Consider extracting repeated logic into a helper and naming intermediate values.';
+      if (/optimi[sz]e|perf|speed/i.test(prompt)) return 'Hot path: avoid JSON.stringify in the loop; precompute or memoize heavy calls.';
+      if (/test/i.test(prompt)) return 'Scaffold a quick test harness using Node’s assert module.';
+      return 'Keeping chat in a bottom/right dock preserves code width while staying handy.';
+    }
+
+    consoleSend.addEventListener('click', ()=>{
+      const val = consoleInput.value.trim();
+      if(!val) return;
+      addMsg(consoleMsgs, val, 'you');
+      consoleInput.value = '';
+      setTimeout(()=> addMsg(consoleMsgs, fakeAnswer(val), 'bot'), 200);
+    });
+    consoleInput.addEventListener('keydown', (e)=>{
+      if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); consoleSend.click(); }
+      if(e.key==='Escape'){ toggleConsole(false); }
+    });
+
+    // Console refresh/clear functionality
+    const consoleRefresh = document.getElementById('consoleRefresh');
+    consoleRefresh.addEventListener('click', ()=>{
+      consoleMsgs.innerHTML = '';
+      consoleMsgs.scrollTop = 0;
+    });
+
+    document.addEventListener('keydown', (e)=>{
+      if((e.ctrlKey || e.metaKey) && (e.key === 'i' || e.key === 'I')){
+        e.preventDefault();
+        toggleConsole();
+      }
+      if(e.key==='Escape') hidePopover();
+    }, true);
+
+    // ===== Console resize (bottom: vertical, right: horizontal) =====
+    const consoleResHandle = consoleEl.querySelector('.resize-handle');
+    let isResizingConsole = false; let startPos = 0; let startSize = 0;
+    function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+
+    consoleResHandle.addEventListener('mousedown', (e)=>{
+      if (!consoleEl.classList.contains('open')) return;
+      isResizingConsole = true;
+      const dock = consoleEl.classList.contains('dock-right') ? 'right' : 'bottom';
+      if(dock==='bottom'){ startPos = e.clientY; startSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--console-h')); }
+      else { startPos = e.clientX; startSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--console-w')); }
+      document.body.style.userSelect = 'none';
+    });
+
+    window.addEventListener('mousemove', (e)=>{
+      if(!isResizingConsole) return;
+      const dock = consoleEl.classList.contains('dock-right') ? 'right' : 'bottom';
+      if(dock==='bottom'){
+        const dy = startPos - e.clientY;
+        let newH = startSize + (dy * 100 / window.innerHeight); // px -> vh
+        newH = clamp(newH, 15, 85);
+        document.documentElement.style.setProperty('--console-h', newH + 'vh');
+      }else{
+        // FIXED logic: drag left = increase width (like bottom logic sign)
+        const dx = startPos - e.clientX; // <-- reversed delta
+        let newW = startSize + (dx * 100 / window.innerWidth); // px -> vw
+        newW = clamp(newW, 20, 70);
+        document.documentElement.style.setProperty('--console-w', newW + 'vw');
+      }
+    });
+
+    window.addEventListener('mouseup', ()=>{ isResizingConsole = false; document.body.style.userSelect = ''; });
+
+    // ===== RMB popover near cursor (draggable + resizable) =====
+    const popover = document.getElementById('popover');
+    const popoverBody = document.getElementById('popoverBody');
+    const popoverInput = document.getElementById('popoverInput');
+    const popoverSend = document.getElementById('popoverSend');
+    const popoverClose = document.getElementById('popoverClose');
+    const popoverDragHandle = document.getElementById('popoverDragHandle');
+    const popoverResizer = document.getElementById('popoverResizer');
+
+    function showPopover(x,y){
+      const pad = 12;
+      const vw = window.innerWidth, vh = window.innerHeight;
+      let px = Math.min(Math.max(x + pad, 8), vw - 380);
+      let py = Math.min(Math.max(y + pad, 8), vh - 220);
+      popover.style.left = px + 'px';
+      popover.style.top = py + 'px';
+      popover.style.width = '360px';
+      popover.style.height = 'auto';
+      popover.classList.add('visible');
+      setTimeout(()=>popoverInput.focus(), 50);
+    }
+    function hidePopover(){ popover.classList.remove('visible'); }
+
+    // Only open popover when right-clicking inside the CODE area (not sidebars)
+    document.addEventListener('contextmenu', (e)=>{
+      const workspace = document.getElementById('workspace');
+      const isInSidebar = e.target.closest('.sidebar');
+      const isInLineNums = e.target.closest('.line-nums');
+      const isInConsole = e.target.closest('.console');
+      if(workspace.contains(e.target) && !isInSidebar && !isInLineNums && !isInConsole){
+        e.preventDefault();
+        showPopover(e.clientX, e.clientY);
+      }
+    });
+
+    popoverSend.addEventListener('click', ()=>{
+      const val = popoverInput.value.trim();
+      if(!val) return;
+      const bubble = document.createElement('div');
+      bubble.className = 'msg you';
+      bubble.textContent = val;
+      popoverBody.appendChild(bubble);
+      popoverInput.value = '';
+      setTimeout(()=>{
+        const ans = document.createElement('div');
+        ans.className = 'msg bot';
+        ans.textContent = fakeAnswer(val);
+        popoverBody.appendChild(ans);
+        popoverBody.scrollTop = popoverBody.scrollHeight;
+      }, 200);
+    });
+    popoverInput.addEventListener('keydown',(e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); popoverSend.click(); } if(e.key==='Escape'){ hidePopover(); } });
+    popoverClose.addEventListener('click', hidePopover);
+
+    // Popover refresh/clear functionality
+    const popoverRefresh = document.getElementById('popoverRefresh');
+    popoverRefresh.addEventListener('click', ()=>{
+      popoverBody.innerHTML = '';
+      popoverBody.scrollTop = 0;
+    });
+
+    // drag to move
+    let drag = {active:false, dx:0, dy:0};
+    popoverDragHandle.addEventListener('mousedown', (e)=>{
+      drag.active = true;
+      const rect = popover.getBoundingClientRect();
+      drag.dx = e.clientX - rect.left; drag.dy = e.clientY - rect.top;
+      document.body.style.userSelect = 'none';
+    });
+    window.addEventListener('mousemove', (e)=>{
+      if(!drag.active) return;
+      const vw = window.innerWidth, vh = window.innerHeight;
+      let x = clamp(e.clientX - drag.dx, 0, vw - popover.offsetWidth);
+      let y = clamp(e.clientY - drag.dy, 0, vh - popover.offsetHeight);
+      popover.style.left = x + 'px'; popover.style.top = y + 'px';
+    });
+    window.addEventListener('mouseup', ()=>{ drag.active = false; document.body.style.userSelect = ''; });
+
+    // resize bottom-right corner
+    let sizing = {active:false, sx:0, sy:0, sw:0, sh:0};
+    popoverResizer.addEventListener('mousedown', (e)=>{
+      e.preventDefault();
+      const r = popover.getBoundingClientRect();
+      sizing = {active:true, sx:e.clientX, sy:e.clientY, sw:r.width, sh:r.height};
+      document.body.style.userSelect = 'none';
+    });
+    window.addEventListener('mousemove', (e)=>{
+      if(!sizing.active) return;
+      let newW = sizing.sw + (e.clientX - sizing.sx);
+      let newH = sizing.sh + (e.clientY - sizing.sy);
+      newW = Math.max(newW, parseInt(getComputedStyle(document.documentElement).getPropertyValue('--popover-min-w')));
+      newH = Math.max(newH, parseInt(getComputedStyle(document.documentElement).getPropertyValue('--popover-min-h')));
+      const vw = window.innerWidth, vh = window.innerHeight;
+      newW = Math.min(newW, vw - 16); newH = Math.min(newH, vh - 16);
+      popover.style.width = newW + 'px'; popover.style.height = newH + 'px';
+    });
+    window.addEventListener('mouseup', ()=>{ sizing.active = false; document.body.style.userSelect = ''; });
+
+    // click outside to close popover (except right-click opener)
+    document.addEventListener('mousedown', (e)=>{
+      if(popover.classList.contains('visible') && !popover.contains(e.target)){
+        setTimeout(()=>{ if(!popover.contains(e.target)) hidePopover(); },0);
+      }
+    });
+
+    // ===== File tree mock interactions =====
+    const fileTree = document.getElementById('fileTree');
+    fileTree.addEventListener('click', (e)=>{
+      const item = e.target.closest('li');
+      if(!item) return;
+      fileTree.querySelectorAll('.file, .folder').forEach(el=> el.classList.remove('active'));
+      item.classList.add('active');
+      if(item.dataset.type === 'file'){
+        const p = item.dataset.path || '';
+        const samples = {
+          'main.py': `import math\nimport json\n\n# Simulated code with long lines to show horizontal width benefits\ndef compute_very_long_expression(alpha, beta, gamma):\n    result = alpha*alpha + beta*beta + gamma*gamma + math.sin(alpha*beta*gamma) + math.cos(alpha+beta+gamma) + len(json.dumps({"alpha": alpha, "beta": beta, "gamma": gamma}))\n    return result\n\n# Try typing, then press Ctrl+I to open the console (bottom/right).\n# Right-click to open an in-place popover near your cursor.\n\nfor i in range(200):\n    # filler lines for scrolling & line numbers\n    print(f"line {i}: {compute_very_long_expression(i, i+1, i+2)}")`,
+          'src/index.ts': `// index.ts\nexport const sum = (a:number,b:number)=>a+b;\nconsole.log('sum(2,3)=', sum(2,3));`,
+          'src/app.tsx': `// app.tsx\nimport React from 'react';\nexport default function App(){\n  return (<div>Hello <strong>Copilot</strong>!</div>);\n}`,
+          'src/utils/math.ts': `// utils/math.ts\nexport function fib(n:number){ return n<2?n:fib(n-1)+fib(n-2); }`,
+          'public/index.html': `<!doctype html>\n<html><body><h1>Public</h1></body></html>`,
+          'README.md': `# Project\n\nThis is a mock project to demo the UI.\n\n- Bottom/Right dockable console (Ctrl+I)\n- Sliding motion when opening/closing\n- RMB inline popover\n- File tree sidebar (resizable)`
+        };
+        codeEl.textContent = samples[p] || codeEl.textContent;
+      }
+    });
+
+    // ===== Left sidebar resize logic =====
+    const sideResizer = document.getElementById('sideResizer');
+    let resizingSide = false, sideStartX = 0, sideStartW = 0;
+    sideResizer.addEventListener('mousedown', (e)=>{
+      resizingSide = true;
+      sideStartX = e.clientX;
+      sideStartW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'));
+      document.body.style.userSelect = 'none';
+    });
+    window.addEventListener('mousemove', (e)=>{
+      if(!resizingSide) return;
+      const dx = e.clientX - sideStartX; // drag right increases width
+      let newW = sideStartW + dx;
+      newW = clamp(newW, 160, 520); // adjust min/max as desired
+      document.documentElement.style.setProperty('--sidebar-w', newW + 'px');
+    });
+    window.addEventListener('mouseup', ()=>{
+      resizingSide = false;
+      document.body.style.userSelect = '';
+    });
+
+    // ===== Minor: keep editor focus on popover close =====
+    const popoverEl = document.getElementById('popover');
+    popoverEl.addEventListener('transitionend', ()=>{ if(!popoverEl.classList.contains('visible')) document.getElementById('workspace').focus(); });
+  </script>
+</body>
+</html>
