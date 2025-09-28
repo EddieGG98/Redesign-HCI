@@ -117,6 +117,58 @@
     .badge{display:inline-flex; gap:6px; align-items:center; font-size:12px; color:var(--muted)}
     .pill{border:1px solid var(--border); padding:2px 8px; border-radius:999px}
     a{color:var(--accent); text-decoration:none}
+
+    /* --- Mock modify: fancy motions & UI --- */
+    .patch-toast{
+      position:fixed; right:16px; top:calc(var(--topbar-h) + 12px);
+      background:linear-gradient(180deg, #0d1422, #0c1320);
+      border:1px solid var(--border); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.45);
+      min-width:320px; max-width:420px; color:var(--text); overflow:hidden;
+      transform: translateX(140%); opacity:.0; pointer-events:none;
+      transition: transform .28s cubic-bezier(.22,.88,.24,1), opacity .18s ease-out;
+    }
+    .patch-toast.visible{ transform: translateX(0); opacity:1; pointer-events:auto; }
+    .patch-toast .head{ display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid var(--border); color:var(--muted); }
+    .patch-toast .body{ padding:10px 12px; font-size:14px; }
+    .patch-toast .actions{ display:flex; gap:8px; padding:10px 12px; border-top:1px solid var(--border); }
+    .patch-toast .actions button{ font-size:13px; padding:6px 10px; }
+    .patch-toast .spark{ width:8px; height:8px; border-radius:50%; background:conic-gradient(from 0deg, #3ea6ff, #22c55e, #a78bfa, #3ea6ff); animation: spin 1.4s linear infinite; }
+
+    @keyframes spin{ to{ transform:rotate(360deg); } }
+    @keyframes pulse{
+      0%{ box-shadow:0 0 0 0 rgba(62,166,255,.35); }
+      70%{ box-shadow:0 0 0 10px rgba(62,166,255,0); }
+      100%{ box-shadow:0 0 0 0 rgba(62,166,255,0); }
+    }
+    .edit-highlight{
+      position:absolute; left:0; right:0; border-left:3px solid var(--accent);
+      background:linear-gradient(90deg, rgba(62,166,255,.12), transparent 70%);
+      outline:1px dashed rgba(62,166,255,.35); border-radius:6px; pointer-events:none;
+      animation: pulse 1.8s ease-out 1;
+    }
+    .edit-applied{
+      position:absolute; left:0; right:0; background:linear-gradient(90deg, rgba(34,197,94,.18), transparent 75%);
+      border-left:3px solid var(--ok); border-radius:6px; pointer-events:none; opacity:0;
+      transition: opacity .35s ease-out;
+    }
+    .edit-applied.show{ opacity:1; }
+    .undo-pill{
+      position:absolute; right:16px; bottom:16px; background:#0c1828; border:1px solid var(--border);
+      color:var(--text); padding:6px 10px; border-radius:999px; font-size:13px; display:none;
+    }
+    .undo-pill.show{ display:inline-flex; gap:8px; align-items:center; animation: float-in .22s ease-out; }
+    @keyframes float-in{ from{ transform:translateY(12px); opacity:0 } to{ transform:translateY(0); opacity:1 } }
+
+    /* Live preview styling and chat suggestion card */
+    .code.previewing{
+      outline:2px dashed rgba(62,166,255,.5);
+      outline-offset:-4px;
+      background-image: linear-gradient(180deg, rgba(62,166,255,.05), transparent 30%);
+    }
+    .suggestion-card{ border:1px dashed var(--border); background:#0b1420; padding:10px 12px; border-radius:10px; color:var(--muted); }
+    .suggestion-card .title{ color:var(--text); font-weight:600; margin-bottom:6px; display:flex; align-items:center; gap:8px }
+    .suggestion-card .actions{ display:flex; gap:8px; margin-top:10px; }
+    .suggestion-card .actions button{ font-size:12.5px; padding:6px 10px; }
   </style>
 </head>
 <body>
@@ -176,6 +228,7 @@ def compute_very_long_expression(alpha, beta, gamma):
 for i in range(200):
     # filler lines for scrolling & line numbers
     print(f"line {i}: {compute_very_long_expression(i, i+1, i+2)}")</pre>
+      <button class="undo-pill" id="undoPill" title="Undo last change">↩ Undo change</button>
     </div>
   </div>
 
@@ -257,7 +310,10 @@ for i in range(200):
       if(!val) return;
       addMsg(consoleMsgs, val, 'you');
       consoleInput.value = '';
-      setTimeout(()=> addMsg(consoleMsgs, fakeAnswer(val), 'bot'), 200);
+      setTimeout(()=> {
+        addMsg(consoleMsgs, fakeAnswer(val), 'bot');
+        maybeProposeEdit('console', val);
+      }, 200);
     });
     consoleInput.addEventListener('keydown', (e)=>{
       if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); consoleSend.click(); }
@@ -361,6 +417,7 @@ for i in range(200):
         ans.textContent = fakeAnswer(val);
         popoverBody.appendChild(ans);
         popoverBody.scrollTop = popoverBody.scrollHeight;
+        maybeProposeEdit('popover', val);
       }, 200);
     });
     popoverInput.addEventListener('keydown',(e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); popoverSend.click(); } if(e.key==='Escape'){ hidePopover(); } });
@@ -462,6 +519,204 @@ for i in range(200):
     // ===== Minor: keep editor focus on popover close =====
     const popoverEl = document.getElementById('popover');
     popoverEl.addEventListener('transitionend', ()=>{ if(!popoverEl.classList.contains('visible')) document.getElementById('workspace').focus(); });
+
+    // ===== Mock modifying function (animated) =====
+    const undoPill = document.getElementById('undoPill');
+    let lastSnapshot = null;
+
+    function getActivePath(){
+      const act = document.querySelector('#fileTree .active');
+      return act?.dataset?.path || 'main.py';
+    }
+
+    function makePatchFor(path, code){
+      // A few curated suggestions per file, with a safe fallback
+      if(path === 'main.py'){
+        const find = 'result = alpha*alpha + beta*beta + gamma*gamma + math.sin(alpha*beta*gamma) + math.cos(alpha+beta+gamma) + len(json.dumps({"alpha": alpha, "beta": beta, "gamma": gamma}))';
+        if(code.includes(find)){
+          const replace = 'result = (alpha**2 + beta**2 + gamma**2\n             + math.sin(alpha*beta*gamma)\n             + math.cos(alpha+beta+gamma)\n             + len(json.dumps({"alpha": alpha, "beta": beta, "gamma": gamma})))';
+          return { kind:'replace', description:'Simplify long expression and use exponent operator', findText:find, replaceText:replace };
+        }
+      }
+      if(path === 'src/app.tsx'){
+        const find = '<div>Hello <strong>Copilot</strong>!</div>';
+        if(code.includes(find)){
+          return { kind:'replace', description:'Tweak greeting copy with emoji', findText:find, replaceText:'<div>Hello World 👋</div>' };
+        }
+      }
+      if(path === 'README.md'){
+        return { kind:'insert-top', description:'Add note header at top', header:'<!-- Edited by Copilot mock: improve docs -->' };
+      }
+      // Fallback: insert a banner comment
+      return { kind:'insert-top', description:'Insert a header comment banner', header:'# Edited by Copilot mock — preview changes' };
+    }
+
+    function lineMetrics(text, atIndex, length){
+      const before = text.slice(0, atIndex);
+      const startLine = (before.match(/\n/g)||[]).length;
+      const linesInSel = (text.slice(atIndex, atIndex+length).match(/\n/g)||[]).length + 1;
+      return { startLine, linesInSel };
+    }
+
+    function px(n){ return Math.round(n) + 'px'; }
+
+    function showHighlight(startLine, lines){
+      const lh = parseFloat(getComputedStyle(codeEl).lineHeight);
+      const padTop = parseFloat(getComputedStyle(codeEl).paddingTop);
+      const top = padTop + startLine * lh;
+      const h = Math.max(1, lines) * lh;
+      const hi = document.createElement('div');
+      hi.className = 'edit-highlight';
+      hi.style.top = px(top);
+      hi.style.height = px(h);
+      codeEl.appendChild(hi);
+      // Scroll into view
+      codeEl.scrollTo({ top: Math.max(0, top - 40), behavior:'smooth' });
+      return hi;
+    }
+
+    function flashApplied(startLine, lines){
+      const lh = parseFloat(getComputedStyle(codeEl).lineHeight);
+      const padTop = parseFloat(getComputedStyle(codeEl).paddingTop);
+      const top = padTop + startLine * lh;
+      const h = Math.max(1, lines) * lh;
+      const ap = document.createElement('div');
+      ap.className = 'edit-applied';
+      ap.style.top = px(top);
+      ap.style.height = px(h);
+      codeEl.appendChild(ap);
+      requestAnimationFrame(()=>{
+        ap.classList.add('show');
+        setTimeout(()=>{ ap.style.transition = 'opacity .6s ease-in'; ap.style.opacity = '0'; setTimeout(()=> ap.remove(), 800); }, 350);
+      });
+    }
+
+    // Return new text after applying patch (pure)
+    function computePatchedText(patch, baseText){
+      if(patch.kind === 'replace'){
+        return baseText.replace(patch.findText, patch.replaceText);
+      }
+      if(patch.kind === 'insert-top'){
+        const header = patch.header || '// Edited by Copilot mock';
+        return header + '\n' + baseText;
+      }
+      return baseText;
+    }
+
+    // Live preview state
+    const previewState = { active:false, textBefore:'', hi:null, startLine:0, lines:1 };
+
+    function enterPreview(patch){
+      // If already previewing, reset to original first
+      if(previewState.active){ exitPreview(); }
+      const current = codeEl.textContent;
+      // Compute metrics on base text
+      if(patch.kind === 'replace'){
+        const idx = current.indexOf(patch.findText);
+        if(idx !== -1){
+          const m = lineMetrics(current, idx, patch.findText.length);
+          previewState.startLine = m.startLine; previewState.lines = m.linesInSel;
+        } else {
+          previewState.startLine = 0; previewState.lines = 1;
+        }
+      } else {
+        previewState.startLine = 0; previewState.lines = 1;
+      }
+      previewState.textBefore = current;
+      const next = computePatchedText(patch, current);
+      codeEl.textContent = next;
+      codeEl.classList.add('previewing');
+      // Optional highlight region of change for orientation
+      previewState.hi = showHighlight(previewState.startLine, previewState.lines);
+      return next;
+    }
+
+    function exitPreview(){
+      if(!previewState.active && !previewState.textBefore) return;
+      if(previewState.hi){ try{ previewState.hi.remove(); }catch(_){} }
+      codeEl.textContent = previewState.textBefore || codeEl.textContent;
+      codeEl.classList.remove('previewing');
+      previewState.active = false; previewState.textBefore = ''; previewState.hi = null;
+      previewState.startLine = 0; previewState.lines = 1;
+    }
+
+    function applyPatch(patch, hiEl){
+      const baseText = previewState.textBefore || codeEl.textContent;
+      // snapshot should be original text, not previewed
+      lastSnapshot = baseText;
+      let startLine = 0, lines = 1;
+      if(patch.kind === 'replace'){
+        const idx = baseText.indexOf(patch.findText);
+        if(idx !== -1){ const m = lineMetrics(baseText, idx, patch.findText.length); startLine = m.startLine; lines = m.linesInSel; }
+      } else if(patch.kind === 'insert-top'){
+        startLine = 0; lines = 1;
+      }
+      const next = computePatchedText(patch, baseText);
+      codeEl.textContent = next;
+      hiEl?.remove();
+      if(previewState.hi){ try{ previewState.hi.remove(); }catch(_){} }
+      codeEl.classList.remove('previewing');
+      previewState.active = false; previewState.textBefore = ''; previewState.hi = null;
+      flashApplied(startLine, lines);
+      // Show undo pill temporarily
+      undoPill.classList.add('show');
+      clearTimeout(undoPill._t);
+      undoPill._t = setTimeout(()=> undoPill.classList.remove('show'), 5000);
+    }
+
+    undoPill.addEventListener('click', ()=>{
+      if(lastSnapshot != null){ codeEl.textContent = lastSnapshot; lastSnapshot = null; }
+      undoPill.classList.remove('show');
+    });
+
+    function showPatchInChat(container, patch, where){
+      const card = document.createElement('div');
+      card.className = 'msg bot';
+      const inner = document.createElement('div');
+      inner.className = 'suggestion-card';
+      inner.innerHTML = `
+        <div class="title">${where === 'popover' ? 'Inline Copilot suggests' : 'Copilot suggests'}</div>
+        <div class="desc">${patch.description}</div>
+        <div class="actions">
+          <button data-act="preview">Preview</button>
+          <button data-act="apply">Apply</button>
+          <button data-act="dismiss" style="margin-left:auto">Dismiss</button>
+        </div>
+      `;
+      card.appendChild(inner);
+      container.appendChild(card);
+      container.scrollTop = container.scrollHeight;
+
+      let previewed = false;
+      inner.addEventListener('click', (e)=>{
+        const btn = e.target.closest('button'); if(!btn) return;
+        const act = btn.dataset.act;
+        if(act==='preview'){
+          if(!previewed){ enterPreview(patch); previewState.active = true; previewed = true; btn.textContent = 'Exit preview'; }
+          else { exitPreview(); previewed = false; btn.textContent = 'Preview'; }
+          return;
+        }
+        if(act==='apply'){
+          applyPatch(patch, previewState.hi);
+          return;
+        }
+        if(act==='dismiss'){
+          if(previewed){ exitPreview(); previewed = false; }
+          card.remove();
+          return;
+        }
+      });
+    }
+
+    function maybeProposeEdit(fromWhere, prompt){
+      const wants = /refactor|clean|optimi[sz]e|fix|extract|format|rename|shorten|simplify|improve|apply|modify|patch/i.test(prompt);
+      const random = Math.random() < 0.35;
+      if(!(wants || random)) return; // only sometimes
+      const path = getActivePath();
+      const patch = makePatchFor(path, codeEl.textContent);
+      const container = fromWhere === 'popover' ? popoverBody : consoleMsgs;
+      showPatchInChat(container, patch, fromWhere);
+    }
   </script>
 </body>
 </html>
