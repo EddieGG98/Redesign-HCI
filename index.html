@@ -698,6 +698,8 @@ for i in range(200):
         }
         if(act==='apply'){
           applyPatch(patch, previewState.hi);
+          // Close the suggestion UI after applying (same behavior as dismiss)
+          card.remove();
           return;
         }
         if(act==='dismiss'){
